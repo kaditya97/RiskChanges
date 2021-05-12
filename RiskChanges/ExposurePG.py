@@ -1,19 +1,13 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[87]:
-try:
-    from osgeo import gdal, osr, ogr
-except:
-    import gdal
-    import osr
-    import ogr
+# In[2]:
 
 
-# import gdal
+from osgeo import gdal
 import numpy
-# import ogr
-import osr
+from osgeo import ogr
+from osgeo import osr
 import os
 import sys
 import pandas as pd
@@ -25,95 +19,128 @@ import re
 from sqlalchemy import create_engine
 
 
-def zonalPoly(feat, lyr, input_value_raster):
-    # Open data
+# In[21]:
+
+
+def zonalPoly(lyr, input_value_raster, Ear_Table_PK, exposure_id, agg_col=None):
+    tempDict = {}
+    print(agg_col, 'agg_col')
+    featlist = range(lyr.GetFeatureCount())
     raster = gdal.Open(input_value_raster)
 
+    projras = osr.SpatialReference(wkt=raster.GetProjection())
+    print(projras, lyr.__dict__, 'porjras')
+
+    # projear = lyr.GetSpatialRef()
+    # print(projear, 'projear')
+
+    # epsgear = projear.GetAttrValue('AUTHORITY', 1)
+    # # print(epsgear,epsgras)
+    # if not epsgras == epsgear:
+    #     toEPSG = "EPSG:"+str(epsgear)
+    #     output_raster = input_value_raster.replace(".tif", "_projected.tif")
+    #     gdal.Warp(output_raster, input_value_raster, dstSRS=toEPSG)
+    #     raster = None
+    #     raster = gdal.Open(output_raster)
+    # else:
+    #     pass
     # Get raster georeference info
-    transform = raster.GetGeoTransform()
-    xOrigin = transform[0]
-    yOrigin = transform[3]
-    pixelWidth = transform[1]
-    pixelHeight = transform[5]
-    # Reproject vector geometry to same projection as raster
-    sourceSR = lyr.GetSpatialRef()
-    targetSR = osr.SpatialReference()
-    targetSR.ImportFromWkt(raster.GetProjectionRef())
-    coordTrans = osr.CoordinateTransformation(sourceSR, targetSR)
-    #feat = lyr.GetNextFeature()
-    geom = feat.GetGeometryRef()
-    # geom.Transform(coordTrans)
-    # Get extent of feat
-    geom = feat.GetGeometryRef()
-    extent = geom.GetEnvelope()
-    # print(extent)
-    # TODO::: create xmin xmax y min ymax from getEnvelope
-    xmin = extent[0]
-    xmax = extent[1]
-    ymin = extent[2]
-    ymax = extent[3]
-
-    # Specify offset and rows and columns to read
-    xoff = int((xmin - xOrigin)/pixelWidth)
-    yoff = int((yOrigin - ymax)/pixelWidth)
-    xcount = int((xmax - xmin)/pixelWidth)+1
-    ycount = int((ymax - ymin)/pixelWidth)+1
-
-    # Create memory target raster
-    target_ds = gdal.GetDriverByName('MEM').Create(
-        '', xcount, ycount, 1, gdal.GDT_Byte)
-    target_ds.SetGeoTransform((
-        xmin, pixelWidth, 0,
-        ymax, 0, pixelHeight,
-    ))
-    # Create for target raster the same projection as for the value raster
     raster_srs = osr.SpatialReference()
     raster_srs.ImportFromWkt(raster.GetProjectionRef())
-    target_ds.SetProjection(raster_srs.ExportToWkt())
+    gt = raster.GetGeoTransform()
+    xOrigin = gt[0]
+    yOrigin = gt[3]
+    pixelWidth = gt[1]
+    pixelHeight = gt[5]
+    rb = raster.GetRasterBand(1)
 
-    # Rasterize zone polygon to raster
-    gdal.RasterizeLayer(target_ds, [1], lyr, burn_values=[1])
-
-    # Read raster as arrays
-    banddataraster = raster.GetRasterBand(1)
+    df = pd.DataFrame()
+    add_1 = True
 
     try:
+        a = lyr.GetFeature(0)
+
+    except:
+        add_1 = True
+
+    print(featlist, add_1, '65')
+
+    for FID in featlist:
+        if add_1:
+            FID += 1
+
+        feat = lyr.GetFeature(FID)
+        geom = feat.GetGeometryRef()
+        area = geom.GetArea()
+        extent = geom.GetEnvelope()
+        xmin = extent[0]
+        xmax = extent[1]
+        ymin = extent[2]
+        ymax = extent[3]
+        print(FID)
+
+        xoff = int((xmin - xOrigin)/pixelWidth)
+        yoff = int((yOrigin - ymax)/pixelWidth)
+        xcount = int((xmax - xmin)/pixelWidth)+1
+        ycount = int((ymax - ymin)/pixelWidth)+1
+
+        target_ds = gdal.GetDriverByName('MEM').Create(
+            '', xcount, ycount, 1, gdal.GDT_Byte)
+        target_ds.SetGeoTransform((
+            xmin, pixelWidth, 0,
+            ymax, 0, pixelHeight,
+        ))
+        # Create for target raster the same projection as for the value raster
+        target_ds.SetProjection(raster_srs.ExportToWkt())
+
+        gdal.RasterizeLayer(target_ds, [1], lyr, burn_values=[1])
+
+        # Read raster as arrays
+        banddataraster = raster.GetRasterBand(1)
         dataraster = banddataraster.ReadAsArray(
             xoff, yoff, xcount, ycount).astype(numpy.float)
 
         bandmask = target_ds.GetRasterBand(1)
         datamask = bandmask.ReadAsArray(
             0, 0, xcount, ycount).astype(numpy.float)
-    except:
-        return list(zip([0], [0]))
-    # Mask zone of raster
-    zoneraster = numpy.ma.masked_array(
-        dataraster,  numpy.logical_not(datamask))
-   # print(zoneraster)
-    (unique, counts) = numpy.unique(zoneraster, return_counts=True)
-    unique[unique.mask] = 9999
-    if 9999 in unique:
-        falsedata = numpy.where(unique == 9999)[0][0]
-        ids = numpy.delete(unique, falsedata)
-        cus = numpy.delete(counts, falsedata)
-    else:
-        ids = unique
-        cus = counts
-    # print(ids)
-    frequencies = numpy.asarray((ids, cus)).T
-    len_ras = zoneraster.count()
-    for i in range(len(frequencies)):
-        frequencies[i][1] = (frequencies[i][1]/len_ras)*100
-    # print(frequencies)
-    # Calculate statistics of zonal raster
-    return frequencies
+        # Mask zone of raster
+        zoneraster = numpy.ma.masked_array(
+            dataraster,  numpy.logical_not(datamask))
+       # print(zoneraster)
+        (unique, counts) = numpy.unique(zoneraster, return_counts=True)
+        unique[unique.mask] = 9999
+        if 9999 in unique:
+            falsedata = numpy.where(unique == 9999)[0][0]
+            ids = numpy.delete(unique, falsedata)
+            cus = numpy.delete(counts, falsedata)
+        else:
+            ids = unique
+            cus = counts
+        # print(ids)
+        frequencies = numpy.asarray((ids, cus)).T
+        len_ras = zoneraster.count()
+        for i in range(len(frequencies)):
+            frequencies[i][1] = (frequencies[i][1]/len_ras)*100
+
+        df_temp = pd.DataFrame(frequencies, columns=['class', 'exposed'])
+        df_temp['geom_id'] = feat[Ear_Table_PK]
+        df_temp['exposure_id'] = exposure_id
+        df_temp['areaOrLen'] = area
+        if agg_col is not None:
+            df_temp['admin_unit'] = feat[agg_col]
+            print(feat[agg_col], 'featagg')
+        df = df.append(df_temp, ignore_index=True)
+
+    raster = None
+    print(df, 'df')
+    return df
 
 
-# In[77]:
+# In[4]:
 
 
 # lead co-ordinate system should be EAR
-def zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col, progress_recorder=None):
+def zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col):
     tempDict = {}
     featlist = range(lyr.GetFeatureCount())
     raster = gdal.Open(input_value_raster)
@@ -123,7 +150,7 @@ def zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col, prog
 
     projear = lyr.GetSpatialRef()
     epsgear = projear.GetAttrValue('AUTHORITY', 1)
-    #print(epsgear, epsgras)
+    print(epsgear, epsgras)
     if not epsgras == epsgear:
         toEPSG = "EPSG:"+str(epsgear)
         output_raster = input_value_raster.replace(".tif", "_projected.tif")
@@ -142,11 +169,17 @@ def zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col, prog
     rb = raster.GetRasterBand(1)
 
     df = pd.DataFrame()
+    add_1 = False
+
+    try:
+        a = lyr.GetFeature(0)
+
+    except:
+        add_1 = True
+
     for FID in featlist:
-
-        if progress_recorder:
-            progress_recorder.set_progress(FID, lyr.GetFeatureCount())
-
+        if add_1:
+            FID += 1
         feat = lyr.GetFeature(FID)
         geom = feat.GetGeometryRef()
         mx, my = geom.GetX(), geom.GetY()
@@ -158,224 +191,190 @@ def zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col, prog
         df_temp['exposure_id'] = exposure_id
         #df_temp['class'] = intval[0][0]
         df_temp['exposed'] = 100
-        # print(df_temp)
+        print(df_temp)
         if agg_col is not None:
             df_temp['admin_unit'] = feat[agg_col]
         df = df.append(df_temp, ignore_index=True)
-
+    raster = None
     return df
 
 
-# In[78]:
+# In[5]:
 
 
-def zonalLine(feat, lyr, input_value_raster):
+def zonalLine(lyr, input_value_raster, Ear_Table_PK, exposure_id, agg_col=None):
+    tempDict = {}
+    featlist = range(lyr.GetFeatureCount())
     raster = gdal.Open(input_value_raster)
 
+    projras = osr.SpatialReference(wkt=raster.GetProjection())
+    epsgras = projras.GetAttrValue('AUTHORITY', 1)
+
+    projear = lyr.GetSpatialRef()
+    epsgear = projear.GetAttrValue('AUTHORITY', 1)
+    # print(epsgear,epsgras)
+    if not epsgras == epsgear:
+        toEPSG = "EPSG:"+str(epsgear)
+        output_raster = input_value_raster.replace(".tif", "_projected.tif")
+        gdal.Warp(output_raster, input_value_raster, dstSRS=toEPSG)
+        raster = None
+        raster = gdal.Open(output_raster)
+    else:
+        pass
     # Get raster georeference info
-    transform = raster.GetGeoTransform()
-    xOrigin = transform[0]
-    yOrigin = transform[3]
-    pixelWidth = transform[1]
-    pixelHeight = transform[5]
-
-    # Reproject vector geometry to same projection as raster
-    sourceSR = lyr.GetSpatialRef()
-    targetSR = osr.SpatialReference()
-    targetSR.ImportFromWkt(raster.GetProjectionRef())
-    coordTrans = osr.CoordinateTransformation(sourceSR, targetSR)
-    #feat = lyr.GetNextFeature()
-    geom = feat.GetGeometryRef()
-    geom.Transform(coordTrans)
-
-    # Get extent of feat
-
-    geom = feat.GetGeometryRef()
-    extent = geom.GetEnvelope()
-    # print(extent)
-    # TODO::: create xmin xmax y min ymax from getEnvelope
-    xmin = extent[0]
-    xmax = extent[1]
-    ymin = extent[2]
-    ymax = extent[3]
-
-    # Specify offset and rows and columns to read
-    xoff = int((xmin - xOrigin)/pixelWidth)
-    yoff = int((yOrigin - ymax)/pixelWidth)
-    xcount = int((xmax - xmin)/pixelWidth)+1
-    ycount = int((ymax - ymin)/pixelWidth)+1
-
-    # Create memory target raster
-    target_ds = gdal.GetDriverByName('MEM').Create(
-        '', xcount, ycount, 1, gdal.GDT_Byte)
-    target_ds.SetGeoTransform((
-        xmin, pixelWidth, 0,
-        ymax, 0, pixelHeight,
-    ))
-
-    # Create for target raster the same projection as for the value raster
     raster_srs = osr.SpatialReference()
     raster_srs.ImportFromWkt(raster.GetProjectionRef())
-    target_ds.SetProjection(raster_srs.ExportToWkt())
+    gt = raster.GetGeoTransform()
+    xOrigin = gt[0]
+    yOrigin = gt[3]
+    pixelWidth = gt[1]
+    pixelHeight = gt[5]
+    rb = raster.GetRasterBand(1)
 
-    # Rasterize zone polygon to raster
-    gdal.RasterizeLayer(target_ds, [1], lyr, burn_values=[1])
-
-    # Read raster as arrays
-    banddataraster = raster.GetRasterBand(1)
-
+    df = pd.DataFrame()
+    add_1 = False
     try:
+        a = lyr.GetFeature(0)
+
+    except:
+        add_1 = True
+
+    for FID in featlist:
+        if add_1:
+            FID += 1
+        feat = lyr.GetFeature(FID)
+        geom = feat.GetGeometryRef()
+        length = geom.Length()
+        extent = geom.GetEnvelope()
+        xmin = extent[0]
+        xmax = extent[1]
+        ymin = extent[2]
+        ymax = extent[3]
+
+        xoff = int((xmin - xOrigin)/pixelWidth)
+        yoff = int((yOrigin - ymax)/pixelWidth)
+        xcount = int((xmax - xmin)/pixelWidth)+1
+        ycount = int((ymax - ymin)/pixelWidth)+1
+
+        target_ds = gdal.GetDriverByName('MEM').Create(
+            '', xcount, ycount, 1, gdal.GDT_Byte)
+        target_ds.SetGeoTransform((
+            xmin, pixelWidth, 0,
+            ymax, 0, pixelHeight,
+        ))
+        # Create for target raster the same projection as for the value raster
+        target_ds.SetProjection(raster_srs.ExportToWkt())
+
+        gdal.RasterizeLayer(target_ds, [1], lyr, burn_values=[1])
+
+        # Read raster as arrays
+        banddataraster = raster.GetRasterBand(1)
         dataraster = banddataraster.ReadAsArray(
             xoff, yoff, xcount, ycount).astype(numpy.float)
 
         bandmask = target_ds.GetRasterBand(1)
         datamask = bandmask.ReadAsArray(
             0, 0, xcount, ycount).astype(numpy.float)
-    except:
-        return list(zip([0], [0]))
-    # Mask zone of raster
-    zoneraster = numpy.ma.masked_array(
-        dataraster,  numpy.logical_not(datamask))
-   # print(zoneraster)
-    (unique, counts) = numpy.unique(zoneraster, return_counts=True)
-    unique[unique.mask] = 9999
-    if 9999 in unique:
-        falsedata = numpy.where(unique == 9999)[0][0]
-        ids = numpy.delete(unique, falsedata)
-        cus = numpy.delete(counts, falsedata)
-    else:
-        ids = unique
-        cus = counts
-    frequencies = numpy.asarray((ids, cus)).T
-    len_ras = zoneraster.count()
-    for i in range(len(frequencies)):
-        frequencies[i][1] = (frequencies[i][1]/len_ras)*100
-    # print(frequencies)
-    # Calculate statistics of zonal raster
-    return frequencies
+        # Mask zone of raster
+        zoneraster = numpy.ma.masked_array(
+            dataraster,  numpy.logical_not(datamask))
+       # print(zoneraster)
+        (unique, counts) = numpy.unique(zoneraster, return_counts=True)
+        unique[unique.mask] = 9999
+        if 9999 in unique:
+            falsedata = numpy.where(unique == 9999)[0][0]
+            ids = numpy.delete(unique, falsedata)
+            cus = numpy.delete(counts, falsedata)
+        else:
+            ids = unique
+            cus = counts
+        # print(ids)
+        frequencies = numpy.asarray((ids, cus)).T
+        len_ras = zoneraster.count()
+        for i in range(len(frequencies)):
+            frequencies[i][1] = (frequencies[i][1]/len_ras)*100
+
+        df_temp = pd.DataFrame(frequencies, columns=['class', 'exposed'])
+        df_temp['geom_id'] = feat[Ear_Table_PK]
+        df_temp['exposure_id'] = exposure_id
+        df_temp['areaOrLen'] = length
+        if agg_col is not None:
+            df_temp['admin_unit'] = feat[agg_col]
+        #df_temp['admin_unit'] =feat[agg_col]
+        df = df.append(df_temp, ignore_index=True)
+    raster = None
+    return df
 
 
-# In[79]:
+# In[6]:
 
 
-def ExposurePgAg(input_zone, admin_unit, agg_col, input_value_raster, connString, exposure_id, Ear_Table_PK, schema, progress_recorder=None):
+def ExposurePgAg(input_zone, admin_unit, agg_col, input_value_raster, connString, exposure_id, Ear_Table_PK, schema):
     conn = ogr.Open(connString)
-
     sql = '''
-    SELECT "{0}".*, "{1}"."{2}" FROM "{3}"."{0}", "{3}"."{1}" WHERE ST_Intersects("{0}".geom, "{1}".geom)
+    SELECT  "{0}".*, "{1}"."{2}" FROM "{3}"."{0}", "{3}"."{1}" WHERE ST_Intersects("{0}".geom, "{1}".geom)
     '''.format(input_zone, admin_unit, agg_col, schema)
 
-    # sql = 'SELECT '+input_zone+'.*,'+admin_unit+'.'+agg_col + ' FROM ' + schema + '.' + input_zone + \
-    #     ' , ' + schema + '.' + admin_unit + \
-    #     ' WHERE ST_Intersects( ' + input_zone+'.geom , '+admin_unit+'.geom )'
-
-    print(sql, 'sql')
+    print(sql)
     lyr = conn.ExecuteSQL(sql)
+
     featList = range(lyr.GetFeatureCount())
+
+    print(featList, 'flist')
     statDict = {}
     feat = lyr.GetNextFeature()
+
+    geom = feat.GetGeometryRef()
+    print(geom, 'geom', geom.GetArea())
+    geometrytype = geom.GetGeometryName()
+    print(geometrytype)
+    i = 1
+    df = pd.DataFrame()
+    if (geometrytype == 'POLYGON' or geometrytype == 'MULTIPOLYGON'):
+        df = zonalPoly(lyr, input_value_raster,
+                       Ear_Table_PK, exposure_id, agg_col=agg_col)
+        return df
+    elif(geometrytype == 'POINT' or geometrytype == 'MULTIPOINT'):
+        return zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col)
+    elif(geometrytype == 'LINESTRING' or geometrytype == 'MULTILINESTRING'):
+        df = zonalLine(lyr, input_value_raster,
+                       Ear_Table_PK, exposure_id, agg_col)
+        return df
+
+
+# In[ ]:
+
+
+# In[7]:
+
+
+def ExposurePG(input_zone, input_value_raster, connString, exposure_id, Ear_Table_PK):
+    # print(input_zone)
+    conn = ogr.Open(connString)
+    lyr = conn.GetLayer(input_zone)
+    featList = range(lyr.GetFeatureCount())
+    # print(featList)
+    statDict = {}
+    feat = lyr.GetNextFeature()
+    # print(lyr.GetLayerDefn())
     geom = feat.GetGeometryRef()
     geometrytype = geom.GetGeometryName()
     # print(geometrytype)
     i = 1
     df = pd.DataFrame()
     if (geometrytype == 'POLYGON' or geometrytype == 'MULTIPOLYGON'):
-        for FID in featList:
-
-            if progress_recorder:
-                progress_recorder.set_progress(FID, lyr.GetFeatureCount())
-
-            #print("progress", ((FID*100)/lyr.GetFeatureCount()), "%")
-            feat = lyr.GetFeature(FID)
-            area = feat.GetGeometryRef().GetArea()
-            exposurd = zonalPoly(feat, lyr, input_value_raster)
-            df_temp = pd.DataFrame(exposurd, columns=['class', 'exposed'])
-            df_temp['geom_id'] = feat[Ear_Table_PK]
-            df_temp['exposure_id'] = exposure_id
-            df_temp['admin_unit'] = feat[agg_col]
-            df_temp['areaOrLen'] = area
-            df = df.append(df_temp, ignore_index=True)
+        df = zonalPoly(lyr, input_value_raster, Ear_Table_PK,
+                       exposure_id, agg_col=None)
         return df
     elif(geometrytype == 'POINT' or geometrytype == 'MULTIPOINT'):
-        return zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col, progress_recorder)
+        return zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col=None)
     elif(geometrytype == 'LINESTRING' or geometrytype == 'MULTILINESTRING'):
-        for FID in featList:
-
-            if progress_recorder:
-                progress_recorder.set_progress(FID, lyr.GetFeatureCount())
-
-            #print("progress", ((FID*100)/lyr.GetFeatureCount()), "%")
-            feat = lyr.GetFeature(FID)
-            length = feat.GetGeometryRef().Length()
-            exposurd = zonalLine(feat, lyr, input_value_raster)
-            df_temp = pd.DataFrame(exposurd, columns=['class', 'exposed'])
-            df_temp['geom_id'] = feat[Ear_Table_PK]
-            df_temp['exposure_id'] = exposure_id
-            df_temp['admin_unit'] = feat[agg_col]
-            df_temp['areaOrLen'] = length
-            df = df.append(df_temp, ignore_index=True)
+        df = zonalLine(lyr, input_value_raster, Ear_Table_PK,
+                       exposure_id, agg_col=None)
         return df
 
 
-# In[139]:
-
-
-def ExposurePG(input_zone, input_value_raster, connString, exposure_id, Ear_Table_PK, progress_recorder=None):
-    # print(input_zone)
-    conn = ogr.Open(connString)
-    lyr = conn.GetLayer(input_zone)
-    featList = range(lyr.GetFeatureCount())
-    #print(featList, 'featList')
-    statDict = {}
-    feat = lyr.GetNextFeature()
-    geom = feat.GetGeometryRef()
-    geometrytype = geom.GetGeometryName()
-    i = 1
-    df = pd.DataFrame()
-    if (geometrytype == 'POLYGON' or geometrytype == 'MULTIPOLYGON'):
-        for FID in featList:
-            # print(lyr.GetFeature(0), 'FID field')
-            # FID += 1
-            # print(progress_recorder)
-            if progress_recorder:
-                progress_recorder.set_progress(FID, lyr.GetFeatureCount())
-
-            #print("progress", ((FID*100)/lyr.GetFeatureCount()), "%")
-            feat = lyr.GetFeature(FID)
-            if feat is None:
-                feat = lyr.GetFeature(FID+1)
-            exposurd = zonalPoly(feat, lyr, input_value_raster)
-            df_temp = pd.DataFrame(exposurd, columns=['class', 'exposed'])
-            # print(feat['bu'],Ear_Table_PK)
-            df_temp['geom_id'] = feat[Ear_Table_PK]
-            df_temp['exposure_id'] = exposure_id
-            #df_temp['admin_unit'] =feat[agg_col]
-            df = df.append(df_temp, ignore_index=True)
-            # print(df)
-        return df
-    elif(geometrytype == 'POINT' or geometrytype == 'MULTIPOINT'):
-        return zonalPoint(lyr, input_value_raster, exposure_id, Ear_Table_PK, agg_col=None, progress_recorder=progress_recorder)
-
-    elif(geometrytype == 'LINESTRING' or geometrytype == 'MULTILINESTRING'):
-        for FID in featList:
-            # FID += 1
-
-            if progress_recorder:
-                progress_recorder.set_progress(FID, lyr.GetFeatureCount())
-
-            #print("progress", ((FID*100)/lyr.GetFeatureCount()), "%")
-            feat = lyr.GetFeature(FID)
-            exposurd = zonalLine(feat, lyr, input_value_raster)
-            df_temp = pd.DataFrame(exposurd, columns=['class', 'exposed'])
-            df_temp['geom_id'] = feat[Ear_Table_PK]
-            df_temp['exposure_id'] = exposure_id
-            #df_temp['admin_unit'] =feat[agg_col]
-            df = df.append(df_temp, ignore_index=True)
-            # print(df)
-        return df
-
-
-# In[81]:
+# In[8]:
 
 
 def reclassify(in_image, out_image, out_dir, classification):
@@ -410,7 +409,7 @@ def reclassify(in_image, out_image, out_dir, classification):
     file2.FlushCache()
 
 
-# In[82]:
+# In[9]:
 
 
 def aggregate(df, agg_col):
@@ -424,7 +423,7 @@ def aggregate(df, agg_col):
     return df_aggregated
 
 
-# In[122]:
+# In[10]:
 
 
 def todatabase(df, connstr, table_name, schema):
@@ -442,13 +441,14 @@ def todatabase(df, connstr, table_name, schema):
     engine.dispose()
 
 
-# In[126]:
+# In[11]:
 
 
 def CalculateExposure(Ear_Table, Ear_Table_PK, haz_dir, connString,
                       connSchema, exposure_id, exposure_table,
-                      admin_unit=None, agg_col=None, aggregation=False, celery_progress=False):
+                      admin_unit=None, agg_col=None, aggregation=False):
     a = re.split(':|//|/|@', connString)
+    print(a, 'a')
     databaseServer = a[4]
     databaseName = a[6]
     databaseUser = a[2]
@@ -461,7 +461,7 @@ def CalculateExposure(Ear_Table, Ear_Table_PK, haz_dir, connString,
     if aggregation is True:
         if admin_unit is not None:
             df = ExposurePgAg(input_zone, admin_unit, agg_col,
-                              input_value_raster, connStringOGR, exposure_id, Ear_Table_PK, connSchema, celery_progress)
+                              input_value_raster, connStringOGR, exposure_id, Ear_Table_PK, connSchema)
             df_aggregated = aggregate(df, agg_col)
             todatabase(df, connString, exposure_table, connSchema)
             todatabase(df_aggregated, connString,
@@ -471,6 +471,40 @@ def CalculateExposure(Ear_Table, Ear_Table_PK, haz_dir, connString,
             return ("Please provide the admin unit and aggregation column for the aggregation")
     else:
         df = ExposurePG(input_zone, input_value_raster,
-                        connStringOGR, exposure_id, Ear_Table_PK, celery_progress)
+                        connStringOGR, exposure_id, Ear_Table_PK)
         todatabase(df, connString, exposure_table, connSchema)
         return ('completed')
+
+
+# '''    databaseServer = "127.0.0.1"
+#    databaseName = "postgres"
+#    databaseUser = "ashok"
+#    databasePW = "gicait123"
+#    connString = "PG: host=%s dbname=%s user=%s password=%s" % (databaseServer,databaseName,databaseUser,databasePW)
+# '''
+
+
+# TEST
+
+# In[13]:
+
+
+# In[16]:
+databaseServer = "203.159.29.45"
+databaseName = "sdssv2"
+databaseUser = "postgres"
+databasePW = "gicait123"
+connString = "postgresql://postgres:gicait123@203.159.29.45:5432/sdssv2"
+
+print(connString)
+
+input_zone = "bu78EPK"
+admin_unit = "panjakent_suFC6QW"
+agg_col = 'id'
+input_value_raster = r"C:\Users\tek\Downloads\Landslide_map.tif"
+exposure_id = 800
+CalculateExposure(input_zone, 'id', input_value_raster, connString,
+                  'itc', exposure_id, 'demo_exp',
+                  admin_unit=admin_unit, agg_col='id', aggregation=True)
+
+# %%
